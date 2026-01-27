@@ -37,6 +37,11 @@ impl ClientsState {
         entry.clone()
     }
 
+    async fn get(&self, id: &str) -> Option<ClientInfo> {
+        let guard = self.inner.read().await;
+        guard.get(id).cloned()
+    }
+
     async fn remove(&self, id: &str) {
         let mut guard = self.inner.write().await;
         guard.remove(id);
@@ -85,6 +90,13 @@ struct MovePayload {
     rotation: Option<f32>,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ChatMessagePayload {
+    Text(String),
+    Object { message: String },
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NewUserBroadcast {
@@ -99,6 +111,14 @@ struct MoveBroadcast {
     rotation: f32,
     avatar: String,
     nickname: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatMessageBroadcast {
+    id: String,
+    nickname: String,
+    message: String,
 }
 
 pub fn build_layer() -> (SocketIoLayer, SocketIo) {
@@ -128,9 +148,43 @@ async fn on_connect(s: SocketRef, io: SocketIo, state: State<ClientsState>) {
     s.on_disconnect(on_disconnect);
 }
 
-async fn on_chat_message(io: SocketIo, Data(message): Data<String>) {
-    tracing::info!(message = %message, "chat message");
-    if let Err(err) = io.emit("chat message", &message).await {
+async fn on_chat_message(
+    s: SocketRef,
+    io: SocketIo,
+    state: State<ClientsState>,
+    Data(payload): Data<ChatMessagePayload>,
+) {
+    let raw_message = match payload {
+        ChatMessagePayload::Text(message) => message,
+        ChatMessagePayload::Object { message } => message,
+    };
+    let message = raw_message.trim();
+    if message.is_empty() {
+        return;
+    }
+
+    let message = if message.len() > 200 {
+        message.chars().take(200).collect::<String>()
+    } else {
+        message.to_string()
+    };
+
+    let id = s.id.to_string();
+    let nickname = state
+        .get(&id)
+        .await
+        .map(|client| client.nickname)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    tracing::info!(client_id = %id, message = %message, "chat message");
+    let payload = ChatMessageBroadcast {
+        id,
+        nickname,
+        message,
+    };
+
+    if let Err(err) = io.emit("chat message", &payload).await {
         tracing::warn!(?err, "failed to emit chat message");
     }
 }
