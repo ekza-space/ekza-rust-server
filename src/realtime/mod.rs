@@ -85,7 +85,6 @@ struct UserDataPayload {
 
 #[derive(Deserialize)]
 struct MovePayload {
-    id: Option<String>,
     position: Option<Vec<f32>>,
     rotation: Option<f32>,
 }
@@ -131,14 +130,16 @@ pub fn register_handlers(io: &SocketIo) {
     io.ns("/", on_connect);
 }
 
-async fn on_connect(s: SocketRef, io: SocketIo, state: State<ClientsState>) {
+async fn on_connect(s: SocketRef, _io: SocketIo, state: State<ClientsState>) {
     let id = s.id.to_string();
     state.insert_default(id.clone()).await;
     let count = state.len().await;
     tracing::info!(client_id = %id, client_count = count, "client connected");
 
+    // Only the joining socket needs the snapshot; broadcasting to everyone
+    // would replace each client's state and briefly show newcomers at default [0,0,0].
     let clients = state.snapshot().await;
-    if let Err(err) = io.emit("existing clients", &clients).await {
+    if let Err(err) = s.emit("existing clients", &clients) {
         tracing::warn!(?err, "failed to emit existing clients");
     }
 
@@ -203,10 +204,13 @@ async fn on_set_user_data(
     }
 }
 
-async fn on_move(io: SocketIo, state: State<ClientsState>, Data(payload): Data<MovePayload>) {
-    let Some(id) = payload.id else {
-        return;
-    };
+async fn on_move(
+    s: SocketRef,
+    io: SocketIo,
+    state: State<ClientsState>,
+    Data(payload): Data<MovePayload>,
+) {
+    let id = s.id.to_string();
     let Some(position) = payload.position else {
         return;
     };
