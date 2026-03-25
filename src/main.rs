@@ -15,7 +15,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (socket_layer, io) = realtime::build_layer();
     realtime::register_handlers(&io);
 
-    let app = app::build_app(state, &config).layer(socket_layer);
+    let app = app::build_app(state, &config)
+        .layer(socket_layer)
+        .layer(app::cors_layer(&config));
 
     let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;

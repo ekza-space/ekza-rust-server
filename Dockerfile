@@ -29,10 +29,12 @@ USER app
 
 EXPOSE 3001
 
+# Lock browser clients to our SPA origin (override with -e for previews / local dev).
 ENV HOST=0.0.0.0 \
     PORT=3001 \
     LOG_LEVEL=info \
-    STATIC_DIR=build
+    STATIC_DIR=build \
+    CORS_ALLOWED_ORIGINS=https://space.ekza.io
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["/app/ekza-rust-server"]

@@ -39,9 +39,11 @@ IMAGE_NAME ?= ekza-rust-server
 IMAGE_TAG ?= latest
 CONTAINER_NAME ?= ekza-rust-server
 
-# SSH-деплой: пример — make deploy DEPLOY_HOST=user@1.2.3.4 DEPLOY_DIR=/home/user/ekza
+# SSH-деплой: пример — make deploy DEPLOY_HOST=vds-eternal DEPLOY_DIR=/root/ekza-rust-server
 DEPLOY_HOST ?=
 DEPLOY_DIR ?= ~/ekza
+# Должен совпадать с Origin фронта (например https://space.ekza.io). Для превью — перечислить через запятую.
+CORS_ALLOWED_ORIGINS ?= https://space.ekza.io
 ARCHIVE_NAME ?= $(IMAGE_NAME)-$(IMAGE_TAG).tar.gz
 
 linux-release:
@@ -83,5 +85,5 @@ deploy: docker-save
 	@test -n "$(DEPLOY_HOST)" || (echo "Задайте DEPLOY_HOST=user@host"; exit 1)
 	ssh -o BatchMode=yes "$(DEPLOY_HOST)" "mkdir -p $(DEPLOY_DIR)"
 	scp "$(ARCHIVE_NAME)" "$(DEPLOY_HOST):$(DEPLOY_DIR)/"
-	ssh "$(DEPLOY_HOST)" "set -e; cd $(DEPLOY_DIR); gunzip -c $(ARCHIVE_NAME) | docker load; docker stop $(CONTAINER_NAME) 2>/dev/null || true; docker rm $(CONTAINER_NAME) 2>/dev/null || true; docker run -d --restart unless-stopped --name $(CONTAINER_NAME) -p 3001:3001 $(IMAGE_NAME):$(IMAGE_TAG)"
+	ssh "$(DEPLOY_HOST)" "set -e; cd $(DEPLOY_DIR); gunzip -c $(ARCHIVE_NAME) | docker load; docker stop $(CONTAINER_NAME) 2>/dev/null || true; docker rm $(CONTAINER_NAME) 2>/dev/null || true; docker run -d --restart unless-stopped --name $(CONTAINER_NAME) -p 3001:3001 -e CORS_ALLOWED_ORIGINS='$(CORS_ALLOWED_ORIGINS)' $(IMAGE_NAME):$(IMAGE_TAG)"
 	@echo "Сервер слушает порт 3001 на $(DEPLOY_HOST)"

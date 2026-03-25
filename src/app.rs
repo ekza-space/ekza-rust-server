@@ -14,13 +14,21 @@ pub fn build_app(state: AppState, config: &Config) -> Router {
 
     routes::router(state)
         .layer(TraceLayer::new_for_http())
-        .layer(cors_layer(config))
         .fallback_service(static_service)
 }
 
-fn cors_layer(config: &Config) -> CorsLayer {
+/// Applied as the **outermost** HTTP layer (see `main.rs`) so `/socket.io` responses
+/// from socketioxide still get `Access-Control-Allow-*` headers for browser clients.
+pub fn cors_layer(config: &Config) -> CorsLayer {
     let mut cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers(Any);
 
     if config.cors_allow_any() {

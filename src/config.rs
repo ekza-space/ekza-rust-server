@@ -27,6 +27,8 @@ impl Config {
         }
 
         let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+        // `*` = allow any Origin (dev only). Production: comma-separated exact origins, e.g.
+        // https://space.ekza.io — browsers on other sites cannot complete Socket.IO CORS.
         let cors_allowed_origins =
             parse_origins(&env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string()))?;
         let static_dir = env::var("STATIC_DIR").unwrap_or_else(|_| "build".to_string());
@@ -60,16 +62,25 @@ pub enum ConfigError {
 }
 
 fn parse_origins(raw: &str) -> Result<Vec<String>, ConfigError> {
-    let origins: Vec<String> = raw
+    let mut origins: Vec<String> = raw
         .split(',')
-        .map(|value| value.trim())
+        .map(|value| normalize_origin(value.trim()))
         .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
         .collect();
+
+    origins.sort();
+    origins.dedup();
 
     if origins.is_empty() {
         return Err(ConfigError::EmptyCorsOrigins);
     }
 
     Ok(origins)
+}
+
+fn normalize_origin(value: &str) -> String {
+    if value == "*" {
+        return "*".to_string();
+    }
+    value.trim_end_matches('/').to_string()
 }
