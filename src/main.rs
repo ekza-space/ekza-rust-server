@@ -1,13 +1,16 @@
 use std::error::Error;
 
-use ekza_rust_server::app;
-use ekza_rust_server::config::Config;
-use ekza_rust_server::realtime;
-use ekza_rust_server::state::AppState;
-use ekza_rust_server::telemetry;
+use server::app;
+use server::config::Config;
+use server::realtime;
+use server::state::AppState;
+use server::telemetry;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Load local env file if present (do not require it).
+    let _ = dotenvy::dotenv();
+
     let config = Config::from_env()?;
     telemetry::init(&config);
 
@@ -15,9 +18,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (socket_layer, io) = realtime::build_layer();
     realtime::register_handlers(&io);
 
-    let app = app::build_app(state, &config)
-        .layer(socket_layer)
-        .layer(app::cors_layer(&config));
+    let app = app::build_app(state, &config).layer(socket_layer);
 
     let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;

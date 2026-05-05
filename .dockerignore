@@ -1,8 +1,10 @@
-/target
-.git
-.gitignore
 .DS_Store
-*.md
-Makefile
-.dockerignore
-agent-transcripts
+.env
+.git
+.github
+target
+!dist/server-linux-amd64
+*.tar
+*.tar.gz
+node_modules
+test-ledger
