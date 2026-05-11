@@ -186,7 +186,7 @@ deploy-binary: stage-static linux-release
 			-e STATIC_DIR=build \
 			-e CORS_ALLOWED_ORIGINS='$(CORS_ALLOWED_ORIGINS)' \
 			$(DEPLOY_RUNTIME_IMAGE) \
-			/bin/sh -c 'chmod +x /app/server && /app/server'; \
+			/app/server; \
 		sleep 2; \
 		curl -fsS $(REMOTE_HEALTH_URL); \
 		docker ps --filter name=$(CONTAINER_NAME)"
