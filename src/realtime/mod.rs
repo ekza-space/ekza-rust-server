@@ -47,6 +47,21 @@ impl ClientsState {
         (previous_room, entry.info.clone())
     }
 
+    async fn ensure_room(&self, id: &str, room_id: String) -> Option<ClientInfo> {
+        let mut guard = self.inner.write().await;
+        let entry = guard
+            .entry(id.to_string())
+            .or_insert_with(ClientRecord::default);
+        match entry.room_id.as_deref() {
+            Some(current_room_id) if current_room_id != room_id => None,
+            Some(_) => Some(entry.info.clone()),
+            None => {
+                entry.room_id = Some(room_id);
+                Some(entry.info.clone())
+            }
+        }
+    }
+
     async fn clear_room(&self, id: &str, room_id: &str) -> Option<String> {
         let mut guard = self.inner.write().await;
         let entry = guard.get_mut(id)?;
@@ -613,12 +628,10 @@ async fn on_request_room_program(
         return;
     }
     let id = s.id.to_string();
-    let Some((_info, Some(current_room_id))) = state.get_with_room(&id).await else {
-        return;
-    };
-    if current_room_id != room_id {
+    if state.ensure_room(&id, room_id.clone()).await.is_none() {
         return;
     }
+    s.join(space_room_name(&room_id));
 
     let Some((room_state, server_revision)) = state
         .get_or_seed_room_program(room_id.clone(), payload.fallback_state)
@@ -650,12 +663,10 @@ async fn on_room_program_update(
         return;
     }
     let id = s.id.to_string();
-    let Some((_info, Some(current_room_id))) = state.get_with_room(&id).await else {
-        return;
-    };
-    if current_room_id != room_id {
+    if state.ensure_room(&id, room_id.clone()).await.is_none() {
         return;
     }
+    s.join(space_room_name(&room_id));
 
     let (room_state, server_revision, applied) = state
         .update_room_program(room_id.clone(), payload.state)
