@@ -254,6 +254,10 @@ struct RoomAssetInstance {
     rotation: Vec<f32>,
     scale: Vec<f32>,
     color: String,
+    link_url: Option<String>,
+    open_in_new_tab: Option<bool>,
+    model_data_url: Option<String>,
+    model_file_name: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
