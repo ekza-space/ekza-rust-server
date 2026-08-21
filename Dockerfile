@@ -9,8 +9,11 @@ RUN apk add --no-cache ca-certificates tini \
 COPY dist/server-linux-amd64 /app/server
 COPY build/ /app/build/
 
-RUN chown -R app:app /app \
+RUN mkdir -p /app/data \
+    && chown -R app:app /app \
     && chmod 755 /app/server
+
+VOLUME ["/app/data"]
 
 USER app
 
@@ -19,7 +22,11 @@ EXPOSE 3001
 ENV HOST=0.0.0.0 \
     PORT=3001 \
     LOG_LEVEL=info \
-    STATIC_DIR=build
+    STATIC_DIR=build \
+    DATA_DIR=/app/data \
+    CORS_ALLOWED_ORIGINS=https://space.ekza.io \
+    SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
+    SPACE_PROGRAM_ID=2WtuXG6AX3erRp6eK5WiSTEEBec5zprQ7qLyLENfMQEH
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -qO- http://127.0.0.1:${PORT}/health >/dev/null || exit 1

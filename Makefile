@@ -26,7 +26,11 @@ DEPLOY_HOST ?= vds-eternal
 DEPLOY_DIR ?= ~/ekza-server-rust
 REMOTE_PORT ?= 3001
 REMOTE_HEALTH_URL ?= http://127.0.0.1:$(REMOTE_PORT)/health
-CORS_ALLOWED_ORIGINS ?= *
+CORS_ALLOWED_ORIGINS ?= https://space.ekza.io
+SOLANA_RPC_URL ?= https://api.mainnet-beta.solana.com
+SPACE_PROGRAM_ID ?= 2WtuXG6AX3erRp6eK5WiSTEEBec5zprQ7qLyLENfMQEH
+MODERATOR_WALLETS ?=
+REMOTE_DATA_DIR ?= $(DEPLOY_DIR)/data
 DOCKER_BUILD_FLAGS ?=
 DEPLOY_STRATEGY ?= binary
 DEPLOY_RUNTIME_IMAGE ?= $(IMAGE_NAME):$(IMAGE_TAG)
@@ -57,6 +61,7 @@ help:
 	@echo ""
 	@echo "Vars (override like: make server PORT=3002):"
 	@echo "  HOST PORT STATIC_DIR EKZA_URL BRIDGE_BIND BRIDGE_URL"
+	@echo "  CORS_ALLOWED_ORIGINS SOLANA_RPC_URL SPACE_PROGRAM_ID MODERATOR_WALLETS REMOTE_DATA_DIR"
 	@echo "  FRONTEND_DIST LINUX_TARGET LINUX_RUSTFLAGS DIST_BIN IMAGE_NAME IMAGE_TAG IMAGE_PLATFORM DEPLOY_HOST DEPLOY_DIR DEPLOY_STRATEGY DEPLOY_RUNTIME_IMAGE REMOTE_PORT"
 
 check:
@@ -127,6 +132,9 @@ docker-run:
 		--name $(CONTAINER_NAME)-local \
 		-p $(PORT):3001 \
 		-e CORS_ALLOWED_ORIGINS='$(CORS_ALLOWED_ORIGINS)' \
+		-e SOLANA_RPC_URL='$(SOLANA_RPC_URL)' \
+		-e SPACE_PROGRAM_ID='$(SPACE_PROGRAM_ID)' \
+		-v $(PWD)/data:/app/data \
 		$(IMAGE_NAME):$(IMAGE_TAG)
 
 docker-save: docker-image
@@ -142,7 +150,7 @@ deploy:
 
 deploy-image: docker-save
 	@test -n "$(DEPLOY_HOST)" || (echo "Set DEPLOY_HOST=user@host"; exit 1)
-	ssh -o BatchMode=yes "$(DEPLOY_HOST)" "mkdir -p $(DEPLOY_DIR)"
+	ssh -o BatchMode=yes "$(DEPLOY_HOST)" "mkdir -p $(DEPLOY_DIR) $(REMOTE_DATA_DIR)"
 	scp "$(ARCHIVE_NAME)" "$(DEPLOY_HOST):$(DEPLOY_DIR)/"
 	ssh "$(DEPLOY_HOST)" "set -e; \
 		cd $(DEPLOY_DIR); \
@@ -158,6 +166,12 @@ deploy-image: docker-save
 			-e LOG_LEVEL=info \
 			-e STATIC_DIR=build \
 			-e CORS_ALLOWED_ORIGINS='$(CORS_ALLOWED_ORIGINS)' \
+			-e DATA_DIR=/app/data \
+			-e SOLANA_RPC_URL='$(SOLANA_RPC_URL)' \
+			-e SPACE_PROGRAM_ID='$(SPACE_PROGRAM_ID)' \
+			-e MODERATOR_WALLETS='$(MODERATOR_WALLETS)' \
+			-v $(REMOTE_DATA_DIR):/app/data \
+			--log-opt max-size=50m --log-opt max-file=5 \
 			$(IMAGE_NAME):$(IMAGE_TAG); \
 		sleep 2; \
 		curl -fsS $(REMOTE_HEALTH_URL); \
@@ -167,7 +181,7 @@ deploy-image: docker-save
 deploy-binary: stage-static linux-release
 	@test -n "$(DEPLOY_HOST)" || (echo "Set DEPLOY_HOST=user@host"; exit 1)
 	@test -n "$(DEPLOY_BINARY_PATH)" || (echo "Set DEPLOY_BINARY_PATH"; exit 1)
-	ssh -o BatchMode=yes "$(DEPLOY_HOST)" "mkdir -p $(DEPLOY_DIR)"
+	ssh -o BatchMode=yes "$(DEPLOY_HOST)" "mkdir -p $(DEPLOY_DIR) $(REMOTE_DATA_DIR)"
 	scp "$(DEPLOY_BINARY_PATH)" "$(DEPLOY_HOST):$(DEPLOY_DIR)/$(notdir $(DEPLOY_BINARY_PATH))"
 	scp -r build "$(DEPLOY_HOST):$(DEPLOY_DIR)/"
 	ssh "$(DEPLOY_HOST)" "set -e; \
@@ -185,6 +199,12 @@ deploy-binary: stage-static linux-release
 			-e LOG_LEVEL=info \
 			-e STATIC_DIR=build \
 			-e CORS_ALLOWED_ORIGINS='$(CORS_ALLOWED_ORIGINS)' \
+			-e DATA_DIR=/app/data \
+			-e SOLANA_RPC_URL='$(SOLANA_RPC_URL)' \
+			-e SPACE_PROGRAM_ID='$(SPACE_PROGRAM_ID)' \
+			-e MODERATOR_WALLETS='$(MODERATOR_WALLETS)' \
+			-v $(REMOTE_DATA_DIR):/app/data \
+			--log-opt max-size=50m --log-opt max-file=5 \
 			$(DEPLOY_RUNTIME_IMAGE) \
 			/app/server; \
 		sleep 2; \

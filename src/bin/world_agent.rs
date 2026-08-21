@@ -75,11 +75,7 @@ fn env_required_any(names: &[&str]) -> Result<String, Box<dyn Error>> {
             return Ok(v);
         }
     }
-    Err(format!(
-        "missing required env var (one of): {}",
-        names.join(", ")
-    )
-    .into())
+    Err(format!("missing required env var (one of): {}", names.join(", ")).into())
 }
 
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
@@ -296,7 +292,9 @@ async fn connect_socket(
 
                     eprintln!("[world_agent] <- chat {}({}): {}", nick, c.id, msg);
                     let mut world = shared.world.write().await;
-                    world.recent_chat.push_back((c.id, nick.to_string(), msg.to_string()));
+                    world
+                        .recent_chat
+                        .push_back((c.id, nick.to_string(), msg.to_string()));
                     while world.recent_chat.len() > 20 {
                         world.recent_chat.pop_front();
                     }
@@ -484,10 +482,19 @@ impl SimpleRng {
     }
 }
 
-fn pick_nearby_point(player_pos: [f32; 3], min_r: f32, max_r: f32, rng: &mut SimpleRng) -> [f32; 3] {
+fn pick_nearby_point(
+    player_pos: [f32; 3],
+    min_r: f32,
+    max_r: f32,
+    rng: &mut SimpleRng,
+) -> [f32; 3] {
     let r = rng.gen_range_f32(min_r, max_r);
     let ang = rng.gen_range_f32(0.0, std::f32::consts::TAU);
-    [player_pos[0] + r * ang.cos(), player_pos[1], player_pos[2] + r * ang.sin()]
+    [
+        player_pos[0] + r * ang.cos(),
+        player_pos[1],
+        player_pos[2] + r * ang.sin(),
+    ]
 }
 
 fn truncate_chat(msg: &str, max_chars: usize) -> String {
@@ -520,7 +527,9 @@ fn find_self_client<'a>(
     }
 
     // Fallback: match by nickname only.
-    clients.iter().find(|(_id, info)| info.nickname.trim() == nick)
+    clients
+        .iter()
+        .find(|(_id, info)| info.nickname.trim() == nick)
 }
 
 #[derive(Debug, Clone)]
@@ -541,15 +550,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| env_or_default("EKZA_URL", "http://127.0.0.1:3001"));
     let nickname = get_arg_value(&args, "nickname")
         .unwrap_or_else(|| env_or_default("EKZA_NICKNAME", "Agent"));
-    let avatar = get_arg_value(&args, "avatar").unwrap_or_else(|| env_or_default("EKZA_AVATAR", ""));
+    let avatar =
+        get_arg_value(&args, "avatar").unwrap_or_else(|| env_or_default("EKZA_AVATAR", ""));
 
     let tick_ms = parse_u64(get_arg_value(&args, "tick-ms"), 200).clamp(50, 2000);
     let reconnect_base_ms =
         parse_u64(get_arg_value(&args, "reconnect-base-ms"), 500).clamp(100, 30_000);
-    let reconnect_max_ms =
-        parse_u64(get_arg_value(&args, "reconnect-max-ms"), 10_000).clamp(reconnect_base_ms, 120_000);
-    let approach_speed =
-        parse_f32(get_arg_value(&args, "approach-speed"), 3.0).clamp(0.1, 50.0);
+    let reconnect_max_ms = parse_u64(get_arg_value(&args, "reconnect-max-ms"), 10_000)
+        .clamp(reconnect_base_ms, 120_000);
+    let approach_speed = parse_f32(get_arg_value(&args, "approach-speed"), 3.0).clamp(0.1, 50.0);
 
     // Bot behavior knobs (same naming as `agent_bot`).
     let llm_tick_ms = parse_u64(
@@ -559,12 +568,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let reply_to_all = env_bool("AGENT_REPLY_TO_ALL", false);
     let auto_approach = env_bool("AGENT_AUTO_APPROACH", true);
     let min_chat_interval_ms = parse_u64(std::env::var("AGENT_MIN_CHAT_INTERVAL_MS").ok(), 5000);
-    let greeting = std::env::var("AGENT_GREETING")
-        .ok()
-        .and_then(|v| {
-            let t = v.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        });
+    let greeting = std::env::var("AGENT_GREETING").ok().and_then(|v| {
+        let t = v.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
 
     let default_system_prompt = r#"You are an in-game AI agent controlling a single avatar in a 3D world.
 You receive:
@@ -587,7 +598,11 @@ Rules:
         .ok()
         .and_then(|v| {
             let t = v.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         })
         .unwrap_or_else(|| default_system_prompt.to_string());
 
@@ -802,7 +817,11 @@ async fn run_session(
         // Snapshot world state (cheap and consistent for this tick).
         let (clients_snapshot, recent_chat_snapshot, chat_seq) = {
             let world = shared.world.read().await;
-            (world.clients.clone(), world.recent_chat.clone(), world.chat_seq)
+            (
+                world.clients.clone(),
+                world.recent_chat.clone(),
+                world.chat_seq,
+            )
         };
 
         // Best-effort: discover our own socket id from the world snapshot.
@@ -951,7 +970,10 @@ async fn run_session(
                             target[0], target[1], target[2], approach_speed
                         );
                         let _ = socket
-                            .emit("goto", json!({ "position": target, "speed": approach_speed }))
+                            .emit(
+                                "goto",
+                                json!({ "position": target, "speed": approach_speed }),
+                            )
                             .await;
                         last_move_ms = now;
                     }
@@ -960,7 +982,10 @@ async fn run_session(
         }
 
         // Idle movement (rare, non-spam).
-        if self_pos.is_some() && now >= next_idle_move_ms && now.saturating_sub(last_move_ms) > 2_000 {
+        if self_pos.is_some()
+            && now >= next_idle_move_ms
+            && now.saturating_sub(last_move_ms) > 2_000
+        {
             if let Some(me) = self_pos {
                 let wander = [
                     me[0] + rng.gen_range_f32(-1.5, 1.5),
@@ -987,9 +1012,8 @@ async fn run_session(
             .as_ref()
             .map(|(_id, _n, m)| is_addressed_to_bot(nickname, m))
             .unwrap_or(false);
-        let should_call_llm_on_chat = saw_new_chat
-            && now.saturating_sub(last_llm_ms) > 1_500
-            && (reply_to_all || addressed);
+        let should_call_llm_on_chat =
+            saw_new_chat && now.saturating_sub(last_llm_ms) > 1_500 && (reply_to_all || addressed);
         let should_call_llm_proactive =
             llm_tick_ms > 0 && now.saturating_sub(last_llm_ms) > llm_tick_ms;
         let should_call_llm = should_call_llm_on_chat || should_call_llm_proactive;
@@ -1021,10 +1045,7 @@ async fn run_session(
                                 return None;
                             }
                             let p = to_vec3(&info.position)?;
-                            Some(format!(
-                                "{nick} at [{:.1}, {:.1}, {:.1}]",
-                                p[0], p[1], p[2]
-                            ))
+                            Some(format!("{nick} at [{:.1}, {:.1}, {:.1}]", p[0], p[1], p[2]))
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
@@ -1122,4 +1143,3 @@ async fn snapshot_self_and_nearest(
 
     (Some(me), nearest)
 }
-

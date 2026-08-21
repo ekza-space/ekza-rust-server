@@ -1,0 +1,14 @@
+{
+  "name": "ekza-rust-server-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "node realtime.mjs"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.3",
+    "bs58": "^6.0.0",
+    "socket.io-client": "^4.8.1",
+    "tweetnacl": "^1.0.3"
+  }
+}

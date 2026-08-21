@@ -52,11 +52,7 @@ fn env_required_any(names: &[&str]) -> Result<String, Box<dyn Error>> {
             return Ok(v);
         }
     }
-    Err(format!(
-        "missing required env var (one of): {}",
-        names.join(", ")
-    )
-    .into())
+    Err(format!("missing required env var (one of): {}", names.join(", ")).into())
 }
 
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
@@ -212,7 +208,12 @@ impl BridgeClient {
         Ok(())
     }
 
-    async fn goto(&self, agent_id: u64, position: [f32; 3], speed: f32) -> Result<(), Box<dyn Error>> {
+    async fn goto(
+        &self,
+        agent_id: u64,
+        position: [f32; 3],
+        speed: f32,
+    ) -> Result<(), Box<dyn Error>> {
         self.http
             .post(format!(
                 "{}/api/v1/agents/{}/command/goto",
@@ -383,7 +384,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let kimi_api_key = env_required_any(&["MOONSHOT_API_KEY", "KIMI_API_KEY"])?;
     let kimi_api_key = kimi_api_key.trim().to_string();
     if kimi_api_key.is_empty() || kimi_api_key == "REPLACE_ME" {
-        return Err("MOONSHOT_API_KEY is not set (still REPLACE_ME). Put your real key in .env".into());
+        return Err(
+            "MOONSHOT_API_KEY is not set (still REPLACE_ME). Put your real key in .env".into(),
+        );
     }
     // Moonshot docs often use the .ai domain for OpenAI-compatible API.
     let kimi_base_url = env_or_default("KIMI_BASE_URL", "https://api.moonshot.ai/v1");
@@ -392,14 +395,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let poll_ms = parse_u64(get_arg_value(&args, "poll-ms"), 500);
     let approach_speed = parse_f32(get_arg_value(&args, "approach-speed"), 3.0).clamp(0.1, 50.0);
     let llm_tick_ms = parse_u64(
-        get_arg_value(&args, "llm-tick-ms")
-            .or_else(|| std::env::var("AGENT_LLM_TICK_MS").ok()),
+        get_arg_value(&args, "llm-tick-ms").or_else(|| std::env::var("AGENT_LLM_TICK_MS").ok()),
         0,
     );
     let auto_approach = env_bool("AGENT_AUTO_APPROACH", true);
     let reply_to_all = env_bool("AGENT_REPLY_TO_ALL", false);
-    let min_chat_interval_ms =
-        parse_u64(std::env::var("AGENT_MIN_CHAT_INTERVAL_MS").ok(), 5000);
+    let min_chat_interval_ms = parse_u64(std::env::var("AGENT_MIN_CHAT_INTERVAL_MS").ok(), 5000);
 
     eprintln!(
         "[agent_bot] bridge={} nickname={} poll_ms={} llm_tick_ms={}",
@@ -449,7 +450,11 @@ Rules:
         .ok()
         .and_then(|v| {
             let t = v.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         })
         .unwrap_or_else(|| default_system_prompt.to_string());
 
@@ -484,14 +489,25 @@ Rules:
         let mut saw_new_chat = false;
         let mut last_incoming_chat: Option<(String, String)> = None;
         for env in events {
-            let id = env.get("id").and_then(|v| v.as_u64()).unwrap_or(last_event_id);
+            let id = env
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(last_event_id);
             if id > last_event_id {
                 last_event_id = id;
             }
             let ev = env.get("event").cloned().unwrap_or(Value::Null);
             if ev.get("type").and_then(|t| t.as_str()) == Some("chat_message") {
-                let nick = ev.get("nickname").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                let msg = ev.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let nick = ev
+                    .get("nickname")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let msg = ev
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if !nick.is_empty() && !msg.is_empty() && nick != nickname {
                     recent_chat.push_back((nick.clone(), msg.clone()));
                     while recent_chat.len() > 20 {
@@ -571,7 +587,12 @@ Rules:
 
             let nearest_text = nearest
                 .as_ref()
-                .map(|(n, p, d)| format!("{n} at [{:.1}, {:.1}, {:.1}] (dist {:.1})", p[0], p[1], p[2], d))
+                .map(|(n, p, d)| {
+                    format!(
+                        "{n} at [{:.1}, {:.1}, {:.1}] (dist {:.1})",
+                        p[0], p[1], p[2], d
+                    )
+                })
                 .unwrap_or_else(|| "none".to_string());
 
             let user_prompt = format!(
@@ -604,7 +625,8 @@ Rules:
                         let sp = g
                             .get("speed")
                             .and_then(|v| v.as_f64())
-                            .unwrap_or(approach_speed as f64) as f32;
+                            .unwrap_or(approach_speed as f64)
+                            as f32;
                         let _ = bridge.goto(agent_id, [x, y, z], sp.clamp(0.1, 50.0)).await;
                         llm_requested_goto = true;
                     }
@@ -631,4 +653,3 @@ Rules:
 
     Ok(())
 }
-

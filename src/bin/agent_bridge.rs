@@ -59,9 +59,16 @@ struct ClientInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeEvent {
-    ExistingClients { clients: HashMap<String, ClientInfo> },
-    NewUser { id: String, user_data: ClientInfo },
-    Delete { id: String },
+    ExistingClients {
+        clients: HashMap<String, ClientInfo>,
+    },
+    NewUser {
+        id: String,
+        user_data: ClientInfo,
+    },
+    Delete {
+        id: String,
+    },
     Move {
         id: String,
         position: Vec<f32>,
@@ -74,7 +81,10 @@ enum BridgeEvent {
         nickname: String,
         message: String,
     },
-    Raw { event: String, data: Value },
+    Raw {
+        event: String,
+        data: Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -182,7 +192,8 @@ async fn connect_socket(
                                 let mut world = shared.world.write().await;
                                 world.clients = map.clone();
                             }
-                            push_event(&shared, BridgeEvent::ExistingClients { clients: map }).await;
+                            push_event(&shared, BridgeEvent::ExistingClients { clients: map })
+                                .await;
                         } else {
                             push_event(
                                 &shared,
@@ -204,7 +215,11 @@ async fn connect_socket(
                 let shared = shared.clone();
                 async move {
                     if let Some(v) = payload_first_json(&payload) {
-                        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let id = v
+                            .get("id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let user_data = v
                             .get("userData")
                             .cloned()
@@ -265,7 +280,11 @@ async fn connect_socket(
                 let shared = shared.clone();
                 async move {
                     if let Some(v) = payload_first_json(&payload) {
-                        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let id = v
+                            .get("id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let position = v
                             .get("position")
                             .cloned()
@@ -273,7 +292,11 @@ async fn connect_socket(
                             .unwrap_or_default();
                         let rotation =
                             v.get("rotation").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
-                        let avatar = v.get("avatar").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let avatar = v
+                            .get("avatar")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let nickname = v
                             .get("nickname")
                             .and_then(|x| x.as_str())
@@ -326,7 +349,11 @@ async fn connect_socket(
                 let shared = shared.clone();
                 async move {
                     if let Some(v) = payload_first_json(&payload) {
-                        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let id = v
+                            .get("id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let nickname = v
                             .get("nickname")
                             .and_then(|x| x.as_str())
@@ -412,7 +439,9 @@ async fn connect_agent_socket(
     // This socket is for emitting commands (move/chat/etc). We keep callbacks minimal to avoid
     // duplicating events for every agent connection.
     let socket = ClientBuilder::new(ekza_url.to_string())
-        .on("error", |_payload: Payload, _socket: Client| async move {}.boxed())
+        .on("error", |_payload: Payload, _socket: Client| {
+            async move {}.boxed()
+        })
         .connect()
         .await?;
 
@@ -502,13 +531,14 @@ async fn create_agent(
     *id_guard = agent_id.saturating_add(1);
     drop(id_guard);
 
-    let socket = connect_agent_socket(
-        &state.ekza_url,
-        nickname,
-        req.avatar.as_str(),
-    )
-    .await
-    .map_err(|e| (StatusCode::BAD_GATEWAY, format!("connect agent socket failed: {e:?}")))?;
+    let socket = connect_agent_socket(&state.ekza_url, nickname, req.avatar.as_str())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("connect agent socket failed: {e:?}"),
+            )
+        })?;
 
     let info = AgentInfo {
         agent_id,
@@ -593,10 +623,12 @@ async fn agent_post_chat(
         if msg.is_empty() {
             return Err((StatusCode::BAD_REQUEST, "message is empty".to_string()));
         }
-        socket
-            .emit("chat message", msg)
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+        socket.emit("chat message", msg).await.map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("socket emit failed: {e:?}"),
+            )
+        })?;
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -617,7 +649,12 @@ async fn agent_post_move(
                 }),
             )
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("socket emit failed: {e:?}"),
+                )
+            })?;
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -646,7 +683,12 @@ async fn agent_post_goto(
                 }),
             )
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("socket emit failed: {e:?}"),
+                )
+            })?;
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -671,7 +713,12 @@ async fn agent_post_user_data(
                 }),
             )
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("socket emit failed: {e:?}"),
+                )
+            })?;
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -687,10 +734,12 @@ async fn agent_post_emit(
         if event.is_empty() {
             return Err((StatusCode::BAD_REQUEST, "event is empty".to_string()));
         }
-        socket
-            .emit(event, cmd.data)
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+        socket.emit(event, cmd.data).await.map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("socket emit failed: {e:?}"),
+            )
+        })?;
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -710,11 +759,12 @@ async fn post_chat(
         return Err((StatusCode::BAD_REQUEST, "message is empty".to_string()));
     }
 
-    state
-        .socket
-        .emit("chat message", msg)
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+    state.socket.emit("chat message", msg).await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("socket emit failed: {e:?}"),
+        )
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -738,7 +788,12 @@ async fn post_move(
             }),
         )
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("socket emit failed: {e:?}"),
+            )
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -757,7 +812,12 @@ async fn post_goto(
             }),
         )
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("socket emit failed: {e:?}"),
+            )
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -785,7 +845,12 @@ async fn post_user_data(
             }),
         )
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("socket emit failed: {e:?}"),
+            )
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -803,11 +868,12 @@ async fn post_emit(
     if event.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "event is empty".to_string()));
     }
-    state
-        .socket
-        .emit(event, cmd.data)
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("socket emit failed: {e:?}")))?;
+    state.socket.emit(event, cmd.data).await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("socket emit failed: {e:?}"),
+        )
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -884,15 +950,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/api/v1/events", get(get_events))
         // Multi-agent management.
         .route("/api/v1/agents", post(create_agent).get(list_agents))
-        .route("/api/v1/agents/{agent_id}", get(get_agent).delete(delete_agent))
-        .route("/api/v1/agents/{agent_id}/command/chat", post(agent_post_chat))
-        .route("/api/v1/agents/{agent_id}/command/move", post(agent_post_move))
-        .route("/api/v1/agents/{agent_id}/command/goto", post(agent_post_goto))
+        .route(
+            "/api/v1/agents/{agent_id}",
+            get(get_agent).delete(delete_agent),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}/command/chat",
+            post(agent_post_chat),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}/command/move",
+            post(agent_post_move),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}/command/goto",
+            post(agent_post_goto),
+        )
         .route(
             "/api/v1/agents/{agent_id}/command/user_data",
             post(agent_post_user_data),
         )
-        .route("/api/v1/agents/{agent_id}/command/emit", post(agent_post_emit))
+        .route(
+            "/api/v1/agents/{agent_id}/command/emit",
+            post(agent_post_emit),
+        )
         // Legacy "default agent" commands (use observer socket).
         .route("/api/v1/command/chat", post(post_chat))
         .route("/api/v1/command/move", post(post_move))
@@ -915,7 +996,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let _ = timeout(Duration::from_millis(800), app_state.socket.disconnect()).await;
             let agents = {
                 let mut guard = app_state.agents.write().await;
-                guard.drain().map(|(_, entry)| entry.socket).collect::<Vec<_>>()
+                guard
+                    .drain()
+                    .map(|(_, entry)| entry.socket)
+                    .collect::<Vec<_>>()
             };
             for s in agents {
                 let _ = timeout(Duration::from_millis(800), s.disconnect()).await;
@@ -925,4 +1009,3 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-

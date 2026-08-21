@@ -1,7 +1,10 @@
 use std::error::Error;
 
+use std::sync::Arc;
+
 use server::app;
 use server::config::Config;
+use server::origin_guard::OriginGuardLayer;
 use server::realtime;
 use server::state::AppState;
 use server::telemetry;
@@ -15,14 +18,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     telemetry::init(&config);
 
     let state = AppState::new(config.clone());
-    let (socket_layer, io) = realtime::build_layer();
+    let (socket_layer, io) = realtime::build_layer(&config).await?;
     realtime::register_handlers(&io);
 
-    let app = app::build_app(state, &config).layer(socket_layer);
+    // Layer order (outermost first): origin guard → CORS → socket.io → REST/static.
+    // CORS must wrap the socket service or `/socket.io` polling gets no headers.
+    let app = app::build_app(state, &config)
+        .layer(socket_layer)
+        .layer(app::cors_layer(&config))
+        .layer(OriginGuardLayer::new(Arc::new(config.clone())));
 
     let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!(addr = %addr, "server listening");
+    tracing::info!(
+        addr = %addr,
+        data_dir = %config.data_dir,
+        rpc = %config.solana_rpc_url,
+        program = %config.space_program_id,
+        origins = ?config.cors_allowed_origins,
+        "server listening"
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

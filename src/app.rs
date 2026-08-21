@@ -8,19 +8,26 @@ use crate::config::Config;
 use crate::routes;
 use crate::state::AppState;
 
+/// REST + static routes. CORS is applied by the caller as the outermost layer
+/// so that it also covers the Socket.IO service.
 pub fn build_app(state: AppState, config: &Config) -> Router {
     let static_service = ServeDir::new(&config.static_dir)
         .fallback(ServeFile::new(format!("{}/index.html", config.static_dir)));
 
     routes::router(state)
         .layer(TraceLayer::new_for_http())
-        .layer(cors_layer(config))
         .fallback_service(static_service)
 }
 
-fn cors_layer(config: &Config) -> CorsLayer {
+pub fn cors_layer(config: &Config) -> CorsLayer {
     let mut cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers(Any);
 
     if config.cors_allow_any() {
