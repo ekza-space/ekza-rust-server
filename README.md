@@ -23,7 +23,7 @@ chat and per-space room state over Socket.IO (axum + socketioxide).
 | `auth` | `{ pubkey, signature }` base58 | Sign the `message` from `auth nonce` with `signMessage`. |
 | `join-space` | `"<spaceId>"` | Replies `existing clients`, `room program state`, `room access`. |
 | `leave-space` | `"<spaceId>"` | |
-| `set user data` | `{ nickname, avatar }` | ≤32 / ≤512 chars |
+| `set user data` | `{ nickname, avatar, avatarHeightScale? }` | ≤32 / ≤512 chars; finite height scale is clamped to `0.5..=2` |
 | `move` | `{ position:[x,y,z], rotation, seq?, sentAt? }` | |
 | `chat message` | `{ message }` or `"text"` | ≤500 chars |
 | `request room program` | `{ roomId }` | Must have joined. |
@@ -34,7 +34,8 @@ Server → client: `auth nonce { nonce, message }`, `auth result { ok, wallet?, 
 `room program state { roomId, state, serverRevision, serverTime, sourceClientId?, rejected? }`,
 `room error { roomId, code, detail? }` with codes
 `invalid_room | chain_unavailable | auth_required | forbidden | stale_revision | invalid_state | rate_limited | storage_failed`,
-plus `existing clients`, `new user`, `move`, `chat message`, `delete`.
+plus `existing clients`, `new user`, `move`, `chat message`, `delete`. Presence
+snapshots and `new user`/`move` payloads include `avatarHeightScale` when set.
 
 ## Run
 

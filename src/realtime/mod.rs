@@ -39,6 +39,8 @@ const WORLD_BOUND_Y: f32 = 500.0;
 const MAX_CHAT_LEN: usize = 500;
 const MAX_NICKNAME_LEN: usize = 32;
 const MAX_AVATAR_LEN: usize = 512;
+const MIN_AVATAR_HEIGHT_SCALE: f32 = 0.5;
+const MAX_AVATAR_HEIGHT_SCALE: f32 = 2.0;
 
 // ------------------------------------------------------------------- state
 
@@ -94,10 +96,13 @@ struct Motion {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ClientInfo {
     pub position: Vec<f32>,
     pub rotation: f32,
     pub avatar: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_height_scale: Option<f32>,
     pub nickname: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wallet: Option<String>,
@@ -109,6 +114,7 @@ impl Default for ClientInfo {
             position: vec![0.0, 0.0, 0.0],
             rotation: 0.0,
             avatar: String::new(),
+            avatar_height_scale: None,
             nickname: String::new(),
             wallet: None,
         }
@@ -184,6 +190,7 @@ impl ClientsState {
             .entry(id.to_string())
             .or_insert_with(ClientRecord::new);
         entry.info.avatar = truncate(&data.avatar.unwrap_or_default(), MAX_AVATAR_LEN);
+        entry.info.avatar_height_scale = sanitize_avatar_height_scale(data.avatar_height_scale);
         entry.info.nickname = truncate(data.nickname.unwrap_or_default().trim(), MAX_NICKNAME_LEN);
         (entry.info.clone(), entry.room_id)
     }
@@ -422,6 +429,7 @@ impl ClientsState {
                     position: rec.info.position.clone(),
                     rotation: rec.info.rotation,
                     avatar: rec.info.avatar.clone(),
+                    avatar_height_scale: rec.info.avatar_height_scale,
                     nickname: rec.info.nickname.clone(),
                     server_seq: rec.server_move_seq,
                     server_time: now_millis(),
@@ -437,8 +445,10 @@ impl ClientsState {
 // ---------------------------------------------------------------- payloads
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UserDataPayload {
     avatar: Option<String>,
+    avatar_height_scale: Option<f32>,
     nickname: Option<String>,
 }
 
@@ -507,6 +517,8 @@ struct MoveBroadcast {
     position: Vec<f32>,
     rotation: f32,
     avatar: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avatar_height_scale: Option<f32>,
     nickname: String,
     server_seq: u64,
     server_time: u64,
@@ -845,6 +857,7 @@ async fn on_move(s: SocketRef, state: State<ClientsState>, TryData(payload): Try
         position: user.position.clone(),
         rotation,
         avatar: user.avatar,
+        avatar_height_scale: user.avatar_height_scale,
         nickname: user.nickname,
         server_seq,
         server_time: now_millis(),
@@ -1125,6 +1138,12 @@ fn truncate(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
+fn sanitize_avatar_height_scale(value: Option<f32>) -> Option<f32> {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(MIN_AVATAR_HEIGHT_SCALE, MAX_AVATAR_HEIGHT_SCALE))
+}
+
 fn space_room_name(room_id: u32) -> String {
     format!("space:{room_id}")
 }
@@ -1157,4 +1176,45 @@ fn start_motion_loop(io: SocketIo, state: ClientsState) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn avatar_height_scale_is_finite_and_clamped() {
+        assert_eq!(sanitize_avatar_height_scale(None), None);
+        assert_eq!(sanitize_avatar_height_scale(Some(f32::NAN)), None);
+        assert_eq!(sanitize_avatar_height_scale(Some(f32::INFINITY)), None);
+        assert_eq!(sanitize_avatar_height_scale(Some(0.25)), Some(0.5));
+        assert_eq!(sanitize_avatar_height_scale(Some(1.25)), Some(1.25));
+        assert_eq!(sanitize_avatar_height_scale(Some(4.0)), Some(2.0));
+    }
+
+    #[test]
+    fn avatar_height_scale_uses_optional_camel_case_json() {
+        let payload: UserDataPayload = serde_json::from_value(serde_json::json!({
+            "nickname": "Wang",
+            "avatar": "ipfs://avatar",
+            "avatarHeightScale": 1.25
+        }))
+        .expect("valid user data");
+        assert_eq!(payload.avatar_height_scale, Some(1.25));
+
+        let value = serde_json::to_value(ClientInfo {
+            avatar_height_scale: Some(1.25),
+            ..ClientInfo::default()
+        })
+        .expect("serializable client info");
+        assert_eq!(
+            value.get("avatarHeightScale"),
+            Some(&serde_json::json!(1.25))
+        );
+        assert!(value.get("avatar_height_scale").is_none());
+
+        let value =
+            serde_json::to_value(ClientInfo::default()).expect("serializable default client info");
+        assert!(value.get("avatarHeightScale").is_none());
+    }
 }
