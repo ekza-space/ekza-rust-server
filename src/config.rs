@@ -51,7 +51,7 @@ impl Config {
         let data_dir = env::var("DATA_DIR").unwrap_or_else(|_| "data".to_string());
 
         let solana_rpc_url = env::var("SOLANA_RPC_URL")
-            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+            .unwrap_or_else(|_| "https://api.devnet.solana.com".to_string());
         let space_program_id_raw = env::var("SPACE_PROGRAM_ID")
             .unwrap_or_else(|_| "2WtuXG6AX3erRp6eK5WiSTEEBec5zprQ7qLyLENfMQEH".to_string());
         let space_program_id = Pubkey::from_str(space_program_id_raw.trim())

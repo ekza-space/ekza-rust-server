@@ -25,7 +25,7 @@ ENV HOST=0.0.0.0 \
     STATIC_DIR=build \
     DATA_DIR=/app/data \
     CORS_ALLOWED_ORIGINS=https://space.ekza.io \
-    SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
+    SOLANA_RPC_URL=https://api.devnet.solana.com \
     SPACE_PROGRAM_ID=2WtuXG6AX3erRp6eK5WiSTEEBec5zprQ7qLyLENfMQEH
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
