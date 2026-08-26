@@ -21,9 +21,9 @@ chat and per-space room state over Socket.IO (axum + socketioxide).
 | Event | Payload | Notes |
 |---|---|---|
 | `auth` | `{ pubkey, signature }` base58 | Sign the `message` from `auth nonce` with `signMessage`. |
-| `join-space` | `"<spaceId>"` | Replies `existing clients`, `room program state`, `room access`. |
-| `leave-space` | `"<spaceId>"` | |
-| `set user data` | `{ nickname, avatar, avatarHeightScale? }` | ≤32 / ≤512 chars; finite height scale is clamped to `0.5..=2` |
+| `join-space` | `"<spaceId>"` or `{ roomId, presenceToken?, claimId? }` | Object form atomically claims browser presence; monotonic `claimId` rejects stale navigation; replies `existing clients`, `presence ready`, `room program state`, `room access`. |
+| `leave-space` | `"<spaceId>"` or `{ roomId, claimId? }` | A newer claim-aware leave also cancels an in-flight join. |
+| `set user data` | `{ nickname, avatar, avatarHeightScale?, presenceToken? }` | ≤32 / ≤512 chars; finite height scale is clamped to `0.5..=2`; the private random browser token collapses duplicate tabs in one room and is never broadcast |
 | `move` | `{ position:[x,y,z], rotation, seq?, sentAt? }` | |
 | `chat message` | `{ message }` or `"text"` | ≤500 chars |
 | `request room program` | `{ roomId }` | Must have joined. |
@@ -31,6 +31,8 @@ chat and per-space room state over Socket.IO (axum + socketioxide).
 
 Server → client: `auth nonce { nonce, message }`, `auth result { ok, wallet?, error? }`,
 `room access { roomId, canEdit, holder?, isOpen, minted }`,
+`presence superseded { roomId }` when a newer tab takes over the same browser presence,
+`presence ready { roomId, claimId? }` after the matching snapshot is committed,
 `room program state { roomId, state, serverRevision, serverTime, sourceClientId?, rejected? }`,
 `room error { roomId, code, detail? }` with codes
 `invalid_room | chain_unavailable | auth_required | forbidden | stale_revision | invalid_state | rate_limited | storage_failed`,
@@ -48,6 +50,7 @@ Tests:
 
 ```bash
 cargo test                  # unit: auth, chain decoding, validation, store, limits
+cd e2e && yarn e2e:presence # guest-only duplicate-tab/reclaim smoke test
 # e2e against a live cluster + a wallet that owns SPACE_ID:
 cd e2e && yarn && SERVER_URL=http://127.0.0.1:3001 OWNER_KEYPAIR=~/owner.json SPACE_ID=3 node realtime.mjs
 # then restart the server and:

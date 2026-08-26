@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "e2e": "node realtime.mjs"
+    "e2e": "node realtime.mjs",
+    "e2e:presence": "node presence.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.3",

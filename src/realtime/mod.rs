@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use socketioxide::extract::{SocketRef, State, TryData};
+use socketioxide::socket::Sid;
 use socketioxide::{layer::SocketIoLayer, SocketIo};
 use solana_pubkey::Pubkey;
 use tokio::sync::RwLock;
@@ -39,6 +40,7 @@ const WORLD_BOUND_Y: f32 = 500.0;
 const MAX_CHAT_LEN: usize = 500;
 const MAX_NICKNAME_LEN: usize = 32;
 const MAX_AVATAR_LEN: usize = 512;
+const MAX_PRESENCE_TOKEN_LEN: usize = 128;
 const MIN_AVATAR_HEIGHT_SCALE: f32 = 0.5;
 const MAX_AVATAR_HEIGHT_SCALE: f32 = 2.0;
 
@@ -47,6 +49,8 @@ const MAX_AVATAR_HEIGHT_SCALE: f32 = 2.0;
 #[derive(Clone)]
 struct ClientsState {
     inner: Arc<RwLock<HashMap<String, ClientRecord>>>,
+    /// Serializes logical presence changes with Socket.IO adapter membership.
+    presence_transition: Arc<RwLock<()>>,
     room_programs: Arc<RwLock<HashMap<u32, RoomProgramRecord>>>,
     chain: ChainClient,
     store: RoomStore,
@@ -55,8 +59,12 @@ struct ClientsState {
 
 struct ClientRecord {
     info: ClientInfo,
+    /// Opaque browser secret used only to collapse duplicate tabs in one room.
+    /// It is deliberately never included in outbound presence payloads.
+    presence_token: Option<String>,
     motion: Option<Motion>,
     room_id: Option<u32>,
+    latest_claim_id: u64,
     last_client_move_seq: u64,
     server_move_seq: u64,
     wallet: Option<Pubkey>,
@@ -68,8 +76,10 @@ impl ClientRecord {
     fn new() -> Self {
         Self {
             info: ClientInfo::default(),
+            presence_token: None,
             motion: None,
             room_id: None,
+            latest_claim_id: 0,
             last_client_move_seq: 0,
             server_move_seq: 0,
             wallet: None,
@@ -134,6 +144,7 @@ impl ClientsState {
     fn new(chain: ChainClient, store: RoomStore, moderators: Vec<Pubkey>) -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
+            presence_transition: Arc::new(RwLock::new(())),
             room_programs: Arc::new(RwLock::new(HashMap::new())),
             chain,
             store,
@@ -184,33 +195,117 @@ impl ClientsState {
         self.inner.read().await.get(id).and_then(|rec| rec.wallet)
     }
 
-    async fn update_user_data(&self, id: &str, data: UserDataPayload) -> (ClientInfo, Option<u32>) {
+    async fn update_user_data(
+        &self,
+        id: &str,
+        data: UserDataPayload,
+    ) -> Option<(ClientInfo, Option<u32>, Vec<String>)> {
         let mut guard = self.inner.write().await;
-        let entry = guard
-            .entry(id.to_string())
-            .or_insert_with(ClientRecord::new);
-        entry.info.avatar = truncate(&data.avatar.unwrap_or_default(), MAX_AVATAR_LEN);
-        entry.info.avatar_height_scale = sanitize_avatar_height_scale(data.avatar_height_scale);
-        entry.info.nickname = truncate(data.nickname.unwrap_or_default().trim(), MAX_NICKNAME_LEN);
-        (entry.info.clone(), entry.room_id)
+        let update_presence_token = data.presence_token.is_some();
+        let presence_token = sanitize_presence_token(data.presence_token.as_deref());
+        let (info, room_id, presence_token) = {
+            // Never recreate a record after `disconnect` while a delayed event
+            // handler is still finishing.
+            let entry = guard.get_mut(id)?;
+            entry.info.avatar = truncate(&data.avatar.unwrap_or_default(), MAX_AVATAR_LEN);
+            entry.info.avatar_height_scale = sanitize_avatar_height_scale(data.avatar_height_scale);
+            entry.info.nickname =
+                truncate(data.nickname.unwrap_or_default().trim(), MAX_NICKNAME_LEN);
+            if update_presence_token {
+                entry.presence_token = presence_token;
+            }
+            (
+                entry.info.clone(),
+                entry.room_id,
+                entry.presence_token.clone(),
+            )
+        };
+        let superseded = room_id
+            .map(|room_id| {
+                supersede_duplicate_presence(&mut guard, id, room_id, presence_token.as_deref())
+            })
+            .unwrap_or_default();
+        Some((info, room_id, superseded))
     }
 
-    async fn set_room(&self, id: &str, room_id: u32) -> (Option<u32>, ClientInfo) {
+    /// Record a route-generation before any potentially slow room lookup.
+    /// A lower generation can never overwrite a newer navigation intent.
+    async fn note_presence_claim(&self, id: &str, claim_id: Option<u64>) -> bool {
         let mut guard = self.inner.write().await;
-        let entry = guard
-            .entry(id.to_string())
-            .or_insert_with(ClientRecord::new);
-        let previous_room = entry.room_id.replace(room_id);
-        (previous_room, entry.info.clone())
+        let Some(entry) = guard.get_mut(id) else {
+            return false;
+        };
+        match claim_id {
+            Some(claim_id) if claim_id >= entry.latest_claim_id => {
+                entry.latest_claim_id = claim_id;
+                true
+            }
+            Some(_) => false,
+            // Legacy clients do not carry generations. Once a modern claim
+            // was seen on this socket, do not let an old-format delayed event
+            // override it.
+            None => entry.latest_claim_id == 0,
+        }
+    }
+
+    async fn set_room(
+        &self,
+        id: &str,
+        room_id: u32,
+        presence_token: Option<String>,
+        claim_id: Option<u64>,
+    ) -> Option<(Option<u32>, ClientInfo, Vec<String>)> {
+        let mut guard = self.inner.write().await;
+        let (previous_room, info, presence_token) = {
+            // See `update_user_data`: a disconnected socket must stay gone.
+            let entry = guard.get_mut(id)?;
+            let claim_is_current = match claim_id {
+                Some(claim_id) => claim_id == entry.latest_claim_id,
+                None => entry.latest_claim_id == 0,
+            };
+            if !claim_is_current {
+                return None;
+            }
+            if let Some(presence_token) = presence_token {
+                entry.presence_token = sanitize_presence_token(Some(&presence_token));
+            }
+            let previous_room = entry.room_id.replace(room_id);
+            if previous_room != Some(room_id) {
+                entry.last_client_move_seq = 0;
+                entry.server_move_seq = 0;
+            }
+            (
+                previous_room,
+                entry.info.clone(),
+                entry.presence_token.clone(),
+            )
+        };
+        let superseded =
+            supersede_duplicate_presence(&mut guard, id, room_id, presence_token.as_deref());
+        Some((previous_room, info, superseded))
     }
 
     async fn room_of(&self, id: &str) -> Option<u32> {
         self.inner.read().await.get(id).and_then(|rec| rec.room_id)
     }
 
-    async fn clear_room(&self, id: &str, room_id: u32) -> Option<u32> {
+    async fn take_current_room(&self, id: &str) -> Option<u32> {
         let mut guard = self.inner.write().await;
         let entry = guard.get_mut(id)?;
+        entry.motion = None;
+        entry.room_id.take()
+    }
+
+    async fn clear_room(&self, id: &str, room_id: u32, claim_id: Option<u64>) -> Option<u32> {
+        let mut guard = self.inner.write().await;
+        let entry = guard.get_mut(id)?;
+        let claim_is_current = match claim_id {
+            Some(claim_id) => claim_id == entry.latest_claim_id,
+            None => entry.latest_claim_id == 0,
+        };
+        if !claim_is_current {
+            return None;
+        }
         if entry.room_id != Some(room_id) {
             return None;
         }
@@ -450,6 +545,55 @@ struct UserDataPayload {
     avatar: Option<String>,
     avatar_height_scale: Option<f32>,
     nickname: Option<String>,
+    presence_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum JoinSpaceInput {
+    RoomId(String),
+    WithPresence {
+        #[serde(rename = "roomId")]
+        room_id: String,
+        #[serde(rename = "presenceToken")]
+        presence_token: Option<String>,
+        #[serde(rename = "claimId")]
+        claim_id: Option<u64>,
+    },
+}
+
+impl JoinSpaceInput {
+    fn into_parts(self) -> (String, Option<String>, Option<u64>) {
+        match self {
+            Self::RoomId(room_id) => (room_id, None, None),
+            Self::WithPresence {
+                room_id,
+                presence_token,
+                claim_id,
+            } => (room_id, presence_token, claim_id),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LeaveSpaceInput {
+    RoomId(String),
+    WithClaim {
+        #[serde(rename = "roomId")]
+        room_id: String,
+        #[serde(rename = "claimId")]
+        claim_id: Option<u64>,
+    },
+}
+
+impl LeaveSpaceInput {
+    fn into_parts(self) -> (String, Option<u64>) {
+        match self {
+            Self::RoomId(room_id) => (room_id, None),
+            Self::WithClaim { room_id, claim_id } => (room_id, claim_id),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -508,6 +652,20 @@ struct AuthResultBroadcast {
 struct NewUserBroadcast {
     id: String,
     user_data: ClientInfo,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresenceSupersededBroadcast {
+    room_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresenceReadyBroadcast {
+    room_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claim_id: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -582,6 +740,8 @@ struct RoomErrorBroadcast {
     code: RoomErrorCode,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claim_id: Option<u64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -691,20 +851,45 @@ async fn on_auth(s: SocketRef, state: State<ClientsState>, TryData(payload): Try
                 },
             );
             if let Some(room_id) = room_id {
-                emit_room_access(&s, &state, room_id, Some(wallet)).await;
-                // Presence now carries the wallet.
-                if let Some((info, _)) = state.get_with_room(&id).await {
-                    let _ = s
-                        .to(space_room_name(room_id))
-                        .emit(
-                            "new user",
-                            &NewUserBroadcast {
-                                id,
-                                user_data: info,
-                            },
-                        )
-                        .await;
+                // Ownership lookup may be slow. Resolve it without blocking
+                // all presence transitions, then revalidate the room while a
+                // read guard keeps the access + presence broadcasts ordered
+                // before any supersede/delete transition.
+                let access = state.access_for(room_id, &wallet).await;
+                let _presence_read = state.presence_transition.read().await;
+                let Some((info, Some(current_room))) = state.get_with_room(&id).await else {
+                    return;
+                };
+                if current_room != room_id {
+                    return;
                 }
+
+                match access {
+                    Ok(access) => {
+                        let _ = s.emit(
+                            "room access",
+                            &RoomAccessBroadcast {
+                                room_id: room_id.to_string(),
+                                access,
+                            },
+                        );
+                    }
+                    Err(code) => {
+                        emit_room_error(&s, room_id, code, None);
+                    }
+                }
+
+                // Presence now carries the wallet.
+                let _ = s
+                    .to(space_room_name(room_id))
+                    .emit(
+                        "new user",
+                        &NewUserBroadcast {
+                            id,
+                            user_data: info,
+                        },
+                    )
+                    .await;
             }
         }
         Err(err) => {
@@ -763,6 +948,24 @@ fn emit_room_error(
             room_id: room_id.to_string(),
             code,
             detail,
+            claim_id: None,
+        },
+    );
+}
+
+fn emit_room_claim_error(
+    s: &SocketRef,
+    room_id: impl ToString,
+    code: RoomErrorCode,
+    claim_id: Option<u64>,
+) {
+    let _ = s.emit(
+        "room error",
+        &RoomErrorBroadcast {
+            room_id: room_id.to_string(),
+            code,
+            detail: None,
+            claim_id,
         },
     );
 }
@@ -774,6 +977,10 @@ async fn on_chat_message(
 ) {
     let id = s.id.to_string();
     let Ok(payload) = payload else { return };
+    // Keep room membership stable from the state read through the broadcast.
+    // A superseding tab therefore observes either this message then `delete`,
+    // or no message at all; never a message from an already-removed ghost.
+    let _presence_read = state.presence_transition.read().await;
     let Some((info, Some(room_id))) = state.get_with_room(&id).await else {
         return;
     };
@@ -806,6 +1013,7 @@ async fn on_chat_message(
 
 async fn on_set_user_data(
     s: SocketRef,
+    io: SocketIo,
     state: State<ClientsState>,
     TryData(payload): TryData<UserDataPayload>,
 ) {
@@ -814,10 +1022,14 @@ async fn on_set_user_data(
     if !state.allow(&id, Limit::UserData).await {
         return;
     }
-    let (user_data, room_id) = state.update_user_data(&id, payload).await;
+    let _presence_transition = state.presence_transition.write().await;
+    let Some((user_data, room_id, superseded)) = state.update_user_data(&id, payload).await else {
+        return;
+    };
     let Some(room_id) = room_id else {
         return;
     };
+    evict_superseded_presences(&io, room_id, superseded).await;
     let payload = NewUserBroadcast { id, user_data };
     if let Err(err) = s
         .to(space_room_name(room_id))
@@ -846,6 +1058,7 @@ async fn on_move(s: SocketRef, state: State<ClientsState>, TryData(payload): Try
         return;
     }
 
+    let _presence_read = state.presence_transition.read().await;
     let Some((user, room_id, server_seq)) = state
         .update_move(&id, position, rotation, payload.seq)
         .await
@@ -882,27 +1095,59 @@ async fn on_goto(s: SocketRef, state: State<ClientsState>, TryData(payload): Try
     if !in_world_bounds(target) || !state.allow(&id, Limit::Moves).await {
         return;
     }
+    let _presence_read = state.presence_transition.read().await;
     let speed = payload.speed.unwrap_or(3.0).clamp(0.1, 50.0);
     let _ = state.set_goto(&id, target, speed, payload.rotation).await;
 }
 
-async fn on_join_space(s: SocketRef, state: State<ClientsState>, TryData(raw): TryData<String>) {
+async fn on_join_space(
+    s: SocketRef,
+    io: SocketIo,
+    state: State<ClientsState>,
+    TryData(payload): TryData<JoinSpaceInput>,
+) {
     let id = s.id.to_string();
-    let Ok(raw) = raw else { return };
+    let Ok(payload) = payload else { return };
+    let (raw, presence_token, claim_id) = payload.into_parts();
+
+    // Record ordering before the on-chain room validation below. This short
+    // transition also prevents the claim generation from changing halfway
+    // through another room-membership broadcast.
+    {
+        let _presence_transition = state.presence_transition.write().await;
+        if !state.note_presence_claim(&id, claim_id).await {
+            return;
+        }
+        let previous_room = state.take_current_room(&id).await;
+        if let Some(previous_room) = previous_room {
+            let previous_socket_room = space_room_name(previous_room);
+            s.leave(previous_socket_room.clone());
+            if let Err(err) = s.to(previous_socket_room).emit("delete", &id).await {
+                tracing::warn!(?err, "failed to emit delete while beginning room claim");
+            }
+        }
+    }
     if !state.allow(&id, Limit::Joins).await {
-        emit_room_error(&s, raw, RoomErrorCode::RateLimited, None);
+        emit_room_claim_error(&s, raw, RoomErrorCode::RateLimited, claim_id);
         return;
     }
     let room_id = match state.parse_room_id(&raw).await {
         Ok(room_id) => room_id,
         Err(code) => {
-            emit_room_error(&s, raw, code, None);
+            emit_room_claim_error(&s, raw, code, claim_id);
             return;
         }
     };
+    let presence_transition = state.presence_transition.write().await;
     let socket_room = space_room_name(room_id);
-    let (previous_room, user_data) = state.set_room(&id, room_id).await;
+    let Some((previous_room, user_data, superseded)) =
+        state.set_room(&id, room_id, presence_token, claim_id).await
+    else {
+        return;
+    };
 
+    // `begin room claim` already detached the current room. Keep this branch
+    // for legacy/re-entrant safety if state is ever populated between phases.
     if let Some(previous_room) = previous_room.filter(|prev| *prev != room_id) {
         let previous_socket_room = space_room_name(previous_room);
         s.leave(previous_socket_room.clone());
@@ -911,11 +1156,21 @@ async fn on_join_space(s: SocketRef, state: State<ClientsState>, TryData(raw): T
         }
     }
 
+    evict_superseded_presences(&io, room_id, superseded).await;
     s.join(socket_room.clone());
 
     let clients = state.snapshot_room(room_id).await;
     if let Err(err) = s.emit("existing clients", &clients) {
         tracing::warn!(?err, "failed to emit room clients");
+    }
+    if let Err(err) = s.emit(
+        "presence ready",
+        &PresenceReadyBroadcast {
+            room_id: room_id.to_string(),
+            claim_id,
+        },
+    ) {
+        tracing::warn!(?err, "failed to confirm room presence");
     }
 
     if !user_data.nickname.is_empty() || !user_data.avatar.is_empty() {
@@ -927,6 +1182,8 @@ async fn on_join_space(s: SocketRef, state: State<ClientsState>, TryData(raw): T
             tracing::warn!(?err, "failed to emit new user on room join");
         }
     }
+
+    drop(presence_transition);
 
     let record = state.room_program(room_id).await;
     let _ = s.emit(
@@ -945,13 +1202,22 @@ async fn on_join_space(s: SocketRef, state: State<ClientsState>, TryData(raw): T
     emit_room_access(&s, &state, room_id, wallet).await;
 }
 
-async fn on_leave_space(s: SocketRef, state: State<ClientsState>, TryData(raw): TryData<String>) {
-    let Ok(raw) = raw else { return };
+async fn on_leave_space(
+    s: SocketRef,
+    state: State<ClientsState>,
+    TryData(payload): TryData<LeaveSpaceInput>,
+) {
+    let Ok(payload) = payload else { return };
+    let (raw, claim_id) = payload.into_parts();
     let Ok(room_id) = raw.trim().parse::<u32>() else {
         return;
     };
     let id = s.id.to_string();
-    let Some(left_room) = state.clear_room(&id, room_id).await else {
+    let _presence_transition = state.presence_transition.write().await;
+    if !state.note_presence_claim(&id, claim_id).await {
+        return;
+    }
+    let Some(left_room) = state.clear_room(&id, room_id, claim_id).await else {
         return;
     };
     let socket_room = space_room_name(left_room);
@@ -1107,6 +1373,7 @@ async fn on_room_program_update(
 
 async fn on_disconnect(s: SocketRef, io: SocketIo, state: State<ClientsState>) {
     let id = s.id.to_string();
+    let _presence_transition = state.presence_transition.write().await;
     let room_id = state.remove(&id).await;
     let count = state.len().await;
     tracing::info!(client_id = %id, client_count = count, "client disconnected");
@@ -1122,6 +1389,58 @@ async fn on_disconnect(s: SocketRef, io: SocketIo, state: State<ClientsState>) {
 }
 
 // ----------------------------------------------------------------- helpers
+
+fn supersede_duplicate_presence(
+    clients: &mut HashMap<String, ClientRecord>,
+    current_id: &str,
+    room_id: u32,
+    presence_token: Option<&str>,
+) -> Vec<String> {
+    let Some(presence_token) = presence_token else {
+        return Vec::new();
+    };
+
+    clients
+        .iter_mut()
+        .filter_map(|(id, record)| {
+            let duplicate = id != current_id
+                && record.room_id == Some(room_id)
+                && record.presence_token.as_deref() == Some(presence_token);
+            duplicate.then(|| {
+                record.room_id = None;
+                record.motion = None;
+                id.clone()
+            })
+        })
+        .collect()
+}
+
+async fn evict_superseded_presences(io: &SocketIo, room_id: u32, superseded: Vec<String>) {
+    if superseded.is_empty() {
+        return;
+    }
+    let socket_room = space_room_name(room_id);
+
+    for id in &superseded {
+        if let Ok(sid) = id.parse::<Sid>() {
+            if let Some(socket) = io.get_socket(sid) {
+                let _ = socket.emit(
+                    "presence superseded",
+                    &PresenceSupersededBroadcast {
+                        room_id: room_id.to_string(),
+                    },
+                );
+                socket.leave(socket_room.clone());
+            }
+        }
+    }
+    for id in superseded {
+        tracing::info!(client_id = %id, room_id, "duplicate browser presence superseded");
+        if let Err(err) = io.within(socket_room.clone()).emit("delete", &id).await {
+            tracing::warn!(?err, "failed to emit delete for superseded presence");
+        }
+    }
+}
 
 fn to_vec3(v: &[f32]) -> Option<[f32; 3]> {
     if v.len() != 3 || !v.iter().all(|n| n.is_finite()) {
@@ -1144,6 +1463,15 @@ fn sanitize_avatar_height_scale(value: Option<f32>) -> Option<f32> {
         .map(|value| value.clamp(MIN_AVATAR_HEIGHT_SCALE, MAX_AVATAR_HEIGHT_SCALE))
 }
 
+fn sanitize_presence_token(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    let valid_length = (16..=MAX_PRESENCE_TOKEN_LEN).contains(&value.len());
+    let valid_chars = value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    (valid_length && valid_chars).then(|| value.to_string())
+}
+
 fn space_room_name(room_id: u32) -> String {
     format!("space:{room_id}")
 }
@@ -1161,6 +1489,10 @@ fn start_motion_loop(io: SocketIo, state: ClientsState) {
         let dt_secs = 0.05_f32;
         loop {
             ticker.tick().await;
+            // Keep every generated motion update ordered before a possible
+            // supersede/delete transition. Otherwise a queued move could
+            // resurrect a just-removed remote avatar on clients.
+            let _presence_read = state.presence_transition.read().await;
             let updates = state.tick_motions(dt_secs).await;
             if updates.is_empty() {
                 continue;
@@ -1216,5 +1548,98 @@ mod tests {
         let value =
             serde_json::to_value(ClientInfo::default()).expect("serializable default client info");
         assert!(value.get("avatarHeightScale").is_none());
+    }
+
+    #[test]
+    fn presence_token_is_private_and_strictly_validated() {
+        assert_eq!(sanitize_presence_token(None), None);
+        assert_eq!(sanitize_presence_token(Some("short")), None);
+        assert_eq!(sanitize_presence_token(Some("0123456789abcdef!")), None);
+        assert_eq!(
+            sanitize_presence_token(Some(" 01234567-89ab-cdef-0123-456789abcdef ")),
+            Some("01234567-89ab-cdef-0123-456789abcdef".to_string())
+        );
+
+        let payload: UserDataPayload = serde_json::from_value(serde_json::json!({
+            "nickname": "Wang",
+            "avatar": "ipfs://avatar",
+            "presenceToken": "01234567-89ab-cdef-0123-456789abcdef"
+        }))
+        .expect("valid user data");
+        assert_eq!(
+            payload.presence_token.as_deref(),
+            Some("01234567-89ab-cdef-0123-456789abcdef")
+        );
+
+        let outbound = serde_json::to_value(ClientInfo::default()).expect("client info");
+        assert!(outbound.get("presenceToken").is_none());
+    }
+
+    #[test]
+    fn join_space_accepts_legacy_and_atomic_presence_payloads() {
+        let legacy: JoinSpaceInput =
+            serde_json::from_value(serde_json::json!("7")).expect("legacy room id");
+        assert_eq!(legacy.into_parts(), ("7".to_string(), None, None));
+
+        let modern: JoinSpaceInput = serde_json::from_value(serde_json::json!({
+            "roomId": "7",
+            "presenceToken": "01234567-89ab-cdef-0123-456789abcdef",
+            "claimId": 42
+        }))
+        .expect("presence-aware room claim");
+        assert_eq!(
+            modern.into_parts(),
+            (
+                "7".to_string(),
+                Some("01234567-89ab-cdef-0123-456789abcdef".to_string()),
+                Some(42)
+            )
+        );
+
+        let leave: LeaveSpaceInput = serde_json::from_value(serde_json::json!({
+            "roomId": "7",
+            "claimId": 43
+        }))
+        .expect("claim-aware leave");
+        assert_eq!(leave.into_parts(), ("7".to_string(), Some(43)));
+    }
+
+    #[test]
+    fn newest_socket_supersedes_same_browser_presence_in_room() {
+        let token = "01234567-89ab-cdef-0123-456789abcdef";
+        let mut clients = HashMap::new();
+
+        let mut old_same_room = ClientRecord::new();
+        old_same_room.room_id = Some(1);
+        old_same_room.presence_token = Some(token.to_string());
+        old_same_room.motion = Some(Motion {
+            target: [1.0, 0.0, 0.0],
+            speed: 1.0,
+        });
+        clients.insert("old".to_string(), old_same_room);
+
+        let mut other_browser = ClientRecord::new();
+        other_browser.room_id = Some(1);
+        other_browser.presence_token = Some("fedcba98-7654-3210-fedc-ba9876543210".to_string());
+        clients.insert("other".to_string(), other_browser);
+
+        let mut same_browser_other_room = ClientRecord::new();
+        same_browser_other_room.room_id = Some(2);
+        same_browser_other_room.presence_token = Some(token.to_string());
+        clients.insert("other-room".to_string(), same_browser_other_room);
+
+        let mut current = ClientRecord::new();
+        current.room_id = Some(1);
+        current.presence_token = Some(token.to_string());
+        clients.insert("current".to_string(), current);
+
+        let superseded = supersede_duplicate_presence(&mut clients, "current", 1, Some(token));
+
+        assert_eq!(superseded, vec!["old"]);
+        assert_eq!(clients["old"].room_id, None);
+        assert!(clients["old"].motion.is_none());
+        assert_eq!(clients["current"].room_id, Some(1));
+        assert_eq!(clients["other"].room_id, Some(1));
+        assert_eq!(clients["other-room"].room_id, Some(2));
     }
 }
